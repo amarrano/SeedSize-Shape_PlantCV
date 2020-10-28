@@ -12,3 +12,6 @@ Briefly, for each RGB image, the pipeline first standardizes image exposure usin
 The pipeline was then parallelized over all sample images as described at https://plantcv.readthedocs.io/en/stable/pipeline_parallel/. All trait estimates per seed and per sample are saved in JSON text files, which are then merged and converted to a final CSV table file using the accessory tool “plantcv-utils.py” implemented in PlantCV.  
 
 More details on the PlantCV functions used in our pipeline can be found in the online user manual of PlantCV (https://plantcv.readthedocs.io/en/latest/).
+
+
+
