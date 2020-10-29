@@ -17,7 +17,7 @@ The pipeline was then parallelized over all sample images as described at https:
 More details on the PlantCV functions used in our pipeline can be found in the online user manual of PlantCV (https://plantcv.readthedocs.io/en/latest/).
 
 
-This workflow was used to process seed images of the rice Global MAGIC population grown under drought and well-watered conditions. The seed images are available at 10.5281/zenodo.4158168.
+This workflow was used to process seed images of the rice Global MAGIC population grown under drought and well-watered conditions. The seed images are available at [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.4158169.svg)](https://doi.org/10.5281/zenodo.4158169).
 
 
 
