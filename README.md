@@ -1,4 +1,7 @@
 # SeedSize-Shape_PlantCV
+Cite this code when using it: [![DOI](https://zenodo.org/badge/308136615.svg)](https://zenodo.org/badge/latestdoi/308136615)
+
++
 Wrokflow designed using the Python package PlantCV to process rice seed images and measure grain size and shape.
 
 PlantCV version (3.6.2+8.g640a968.dirty)  
