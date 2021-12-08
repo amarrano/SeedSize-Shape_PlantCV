@@ -1,0 +1,1071 @@
+---
+title: "Statistical analysis of seed traits measured within the rice Global MAGIC population"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+
+```{r - load packages}
+
+require(stringr)
+require(data.table)
+require(ggplot2)
+require(plyr)
+require(dplyr)
+require(tidyr)
+require(dlookr)
+require(tibble)
+require(reshape2)
+require(gridExtra)
+require(grid)
+require(ggfortify)
+require(Hmisc)
+require(GGally)
+
+require(ggstatsplot)
+require(nortest)
+require(lsmeans)
+require(rstatix)
+require(ggcorrplot)
+require(sommer)
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+```{r - convertion pixels to mm}
+
+#let's load the phenotypic measurements obtained with the PlantCV pipeline
+ww.geno.all <- read.csv("WW_Samples_ALLPhenotypes_Jan30_2020.csv")
+
+#let's select the colummn that we need and convert pixels to mm based on the convertion factor for images with a 300 dpi resolution
+
+ww.geno.all.clean <- ww.geno.all %>%
+  dplyr::select(Label_Phenotyping, Seed_ID, Genotype, Treatment, Number, image, timestamp, filename, ellipse_eccentricity, ellipse_minor_axis, ellipse_major_axis, convex_hull_area, perimeter, solidity, area, longest_path, convex_hull_vertices) %>%
+  mutate(Area = area *0.085,
+         CH.Area = convex_hull_area * 0.085,
+         Perimeter = perimeter * 0.085,
+         Longest.Path = longest_path * 0.085,
+         Major.Axis = ellipse_major_axis * 0.085,
+         Minor.Axis = ellipse_minor_axis * 0.085) %>%
+  rename(Environment = Treatment,
+         CH.Vertices = convex_hull_vertices,
+         Eccentricity = ellipse_eccentricity,
+         Solidity = solidity)
+
+#write.csv(ww.geno.all.clean, "WW_Samples_ALLPhenotypes_Metrics_mm_Feb14_2020.csv", row.names = F)
+
+ds.geno.all <- read.csv("DS_Samples__ALLPhenotypes_Jan30_2020.csv")
+
+ds.geno.all.clean <- ds.geno.all %>%
+  dplyr::select(Label_Phenotyping, Seed_ID, Genotype, Treatment, Number, image, timestamp, filename, ellipse_eccentricity, ellipse_minor_axis, ellipse_major_axis, convex_hull_area, perimeter, solidity, area, longest_path, convex_hull_vertices) %>%
+  mutate(Area = area *0.085,
+         CH.Area = convex_hull_area * 0.085,
+         Perimeter = perimeter * 0.085,
+         Longest.Path = longest_path * 0.085,
+         Major.Axis = ellipse_major_axis * 0.085,
+         Minor.Axis = ellipse_minor_axis * 0.085) %>%
+  rename(Environment = Treatment,
+         CH.Vertices = convex_hull_vertices,
+         Eccentricity = ellipse_eccentricity,
+         Solidity = solidity)
+
+#write.csv(ds.geno.all.clean, "DS_Samples__ALLPhenotypes_Metrics_mm_Feb14_2020.csv", row.names = F)
+
+
+```
+
+```{r - WW - N.seeds}
+
+ww.metrics <- ww.geno.all.clean %>%
+  dplyr::select(-c(Seed_ID, image, timestamp, ellipse_minor_axis, ellipse_major_axis, area, convex_hull_area, perimeter, longest_path))
+
+#write.csv(ww.metrics, "WW_Samples_onlyPheno_Converted_mm_Feb14_2020.csv", row.names = F)
+
+N.seeds <- data.frame(table(ww.metrics$Label_Phenotyping))
+colnames(N.seeds) <- c("Label_Phenotyping", "N.seeds")
+hist(N.seeds$N.seeds)
+
+summary(N.seeds$N.seeds)
+
+#(95% confidence interval)
+
+N.seeds.CI.ww <- N.seeds %>% 
+  summarise(mean = mean(N.seeds, na.rm = TRUE),
+            sd = sd(N.seeds, na.rm = TRUE),
+            n = n()) %>%
+  mutate(se = sd / sqrt(n),
+         lower.ci = mean - qt(1 - (0.05 / 2), n - 1) * se,
+         upper.ci = mean + qt(1 - (0.05 / 2), n - 1) * se)
+
+N.seeds.CI.ww
+
+```
+
+To identify and remove seedoutliers per sample, I first try different methods. Then, I decided to visualize sample boxplots and then define upper and lower cutoff that will remove those seeds touching on the scanner and identified as a single object (large value of seed area) and seeds fragmented in small pieces identified as separated objects (very small seed area values).
+```{r - WW outliers (Area)}
+
+summary(ww.metrics$Area)
+
+#identify outliers using the boxplot.stats function
+outlier_values <- boxplot.stats(ww.metrics$area_inmm2)$out  # outlier values.
+length(outlier_values)#301
+
+max(outlier_values)
+min(outlier_values)
+
+
+#Interquartile Range method (IQR)
+minT <- summary(ww.metrics$Area)[2] - 1.5*IQR(ww.metrics$Area)#101
+maxT <- summary(ww.metrics$Area)[5] + 1.5*IQR(ww.metrics$Area)#250
+
+ww.area <- ww.metrics %>%
+  dplyr::select(Label_Phenotyping, Genotype, Area)
+
+ww.area$outlier <- "No"
+
+ww.area$outlier[ww.area$Area <= minT | ww.area$Area >= maxT] <- "Yes"
+
+#visualize the outliers identified with the IQR method on the boxplot using ggplot2
+ggplot(ww.area, aes(x=Genotype, y=Area)) + 
+  geom_boxplot() + 
+  geom_point(data = ww.area, aes(x=Genotype, y=Area), color = 'red') +
+  theme(axis.text.x = element_text(angle = 90, size = 4))
+
+
+outliers <- ww.area[which(ww.area$outlier == "Yes"),]
+length(unique(outliers$Genotype))
+
+#write.csv(outliers, "WW_Samples_Area_inmm2_outliers.csv", row.names = F)
+
+#Let's visualize the boxplots of the genotypes with seed outliers for clarity
+
+ww.area.outliers <- ww.area[which(ww.area$Genotype %in% outliers$Genotype),]
+
+#tiff("Boxplot_outliers_1.5IQR_WW_Samples_Feb14_20.tiff")
+ggplot(ww.area.outliers, aes(x=Genotype, y=Area)) + 
+  geom_boxplot() + 
+  geom_point(data = outliers, aes(x=Genotype, y=Area), color = 'red') +
+  theme(axis.text.x = element_text(angle = 90, size = 8))
+#dev.off()
+
+
+```
+
+
+In the above boxplots,  the red dots with values of seed area close to zero or below 60, are pieces of the same seed identified as different objects. On the contrary, the red dots above 350 are those seeds that are too close on the scanner during the scanning that they are identified as a single object. Since the IQR method was a bit conservative because removing extreme seed measures with a biological meaning, we decided to use the value 60 and 350 as empirical cutoffs to remove errouneous seed area measures.
+
+```{r - WW remove outliers}
+
+ww.metrics.noOut <- ww.metrics[which(ww.metrics$Area > 60 &
+                                       ww.metrics$Area < 350),]
+
+
+ww.geno.all.clean.noOut <- ww.geno.all.clean[which(ww.geno.all.clean$filename %in% ww.metrics.noOut$filename),]
+#write.csv(ww.geno.all.clean.noOut, "WW_Samples_ALLPhenotypes_Metrics_mm_Feb14_2020_noOut.csv", row.names = F)
+
+
+```
+
+
+```{r - WW Trait Distribution}
+
+p2 <- ggplot(ww.metrics.noOut, aes(x = Eccentricity)) + 
+  geom_density(fill = "orange", alpha = 0.7) + xlab("Ellipse Eccentricity") + theme_bw() +
+  theme(axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+p3 <- ggplot(ww.metrics.noOut, aes(x = Solidity)) + 
+  geom_density(fill = "orange", alpha = 0.7) + xlab("Solidity") + xlim(c(0.85, 1.1)) +
+  theme_bw() +
+  theme(axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+p4 <- ggplot(ww.metrics.noOut, aes(x = CH.Vertices)) + 
+  geom_density(fill = "orange", alpha = 0.7) + xlab("Convex Hull Vertices") + theme_bw() +
+  theme(axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+p5 <- ggplot(ww.metrics.noOut, aes(x = Area)) + 
+  geom_density(fill = "orange", alpha = 0.7) + xlab("Seed Area") + theme_bw() +
+  theme(axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+p6 <- ggplot(ww.metrics.noOut, aes(x = CH.Area)) + 
+  geom_density(fill = "orange", alpha = 0.7) + xlab("Convex Hull Area") + theme_bw() +
+  theme(axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+p7 <- ggplot(ww.metrics.noOut, aes(x = Perimeter)) + 
+  geom_density(fill = "orange", alpha = 0.7) + xlab("Perimeter") + theme_bw() +
+  theme(axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+p10 <- ggplot(ww.metrics.noOut, aes(x = Longest.Path)) + 
+  geom_density(fill = "orange", alpha = 0.7) + xlab("Longest Path") + theme_bw() +
+  theme(axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+p11 <- ggplot(ww.metrics.noOut, aes(x = Major.Axis)) + 
+  geom_density(fill = "orange", alpha = 0.7) + xlab("Ellipse Major Axis") + theme_bw() +
+  theme(axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+p12 <- ggplot(ww.metrics.noOut, aes(x = Minor.Axis)) + 
+  geom_density(fill = "orange", alpha = 0.7) + xlab("Ellipse Minor Axis") + theme_bw() +
+  theme(axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+
+#tiff("WW_Trait_Distributions.tiff", res = 300, height = 25, width = 25, units = "cm")
+grid.arrange(p2, p3, p4, p5, p6, p7, p10, p11, p12, ncol= 3)
+#dev.off()
+
+```
+```{r - DS - N.seeds}
+
+ds.metrics <- ds.geno.all.clean %>%
+  dplyr::select(-c(Seed_ID, image, timestamp, ellipse_minor_axis, ellipse_major_axis, area, convex_hull_area, perimeter, longest_path))
+
+#write.csv(ds.metrics, "DS_Samples_onlyPheno_Converted_mm_Feb14_2020.csv", row.names = F)
+
+N.seeds <- data.frame(table(ds.metrics$Label_Phenotyping))
+colnames(N.seeds) <- c("Label_Phenotyping", "N.seeds")
+hist(N.seeds$N.seeds)
+
+summary(N.seeds$N.seeds)
+
+#(95% confidence interval)
+
+N.seeds.CI.ww <- N.seeds %>% 
+  summarise(mean = mean(N.seeds, na.rm = TRUE),
+            sd = sd(N.seeds, na.rm = TRUE),
+            n = n()) %>%
+  mutate(se = sd / sqrt(n),
+         lower.ci = mean - qt(1 - (0.05 / 2), n - 1) * se,
+         upper.ci = mean + qt(1 - (0.05 / 2), n - 1) * se)
+
+N.seeds.CI.ww
+
+```
+```{r - DS - outliers (Area)}
+
+summary(ds.metrics$Area)
+
+#identify outliers using the boxplot.stats function
+outlier_values <- boxplot.stats(ds.metrics$area_inmm2)$out  # outlier values.
+length(outlier_values)#438
+
+max(outlier_values)
+min(outlier_values)
+
+
+#Interquartile Range method (IQR)
+minT <- summary(ds.metrics$Area)[2] - 1.5*IQR(ds.metrics$Area)#68.5
+maxT <- summary(ds.metrics$Area)[5] + 1.5*IQR(ds.metrics$Area)#213
+
+ds.area <- ds.metrics %>%
+  dplyr::select(Label_Phenotyping, Genotype, Area)
+
+ds.area$outlier <- "No"
+
+ds.area$outlier[ds.area$Area <= minT | ds.area$Area >= maxT] <- "Yes"
+
+#visualize the outliers identified with the IQR method on the boxplot using ggplot2
+ggplot(ds.area, aes(x=Genotype, y=Area)) + 
+  geom_boxplot() + 
+  geom_point(data = outliers, aes(x=Genotype, y=Area), color = 'red') +
+  theme(axis.text.x = element_text(angle = 90, size = 4))
+
+
+outliers <- ds.area[which(ds.area$outlier == "Yes"),]
+length(unique(outliers$Genotype))#145
+
+#write.csv(outliers, "DS_Samples_Area_inmm2_outliers.csv", row.names = F)
+
+
+#Let's visualize the boxplots of the genotypes with seed outliers for clarity
+
+ds.area.outliers <- ds.area[which(ds.area$Genotype %in% outliers$Genotype),]
+
+#tiff("Boxplot_outliers_1.5IQR_WW_Samples_Feb14_20.tiff")
+ggplot(ds.area.outliers, aes(x=Genotype, y=Area)) + 
+  geom_boxplot() + 
+  geom_point(data = outliers, aes(x=Genotype, y=Area), color = 'red') +
+  theme(axis.text.x = element_text(angle = 90, size = 8))
+#dev.off()
+
+```
+
+In the case of drought stressed samples (DS), I used different values of cutoffs (<30 and > 350). In addition, I checked single images to confirm that they were true outliers and refined the final list of sample seeds to remove.
+
+```{r - DS remove outliers}
+
+ds.metrics.Out <- ds.metrics[which(ds.metrics$Area > 30 &
+                                       ds.metrics$Area < 350),]
+
+#write.csv(ds.metrics.Out, "DS_Samples_Area_inmm2_outliers.csv", row.names = F)
+
+##After checking the single images, I refined the list of outliers to remove:
+
+outliers_toRemove <- read.csv("DS_Samples_Area_inmm2_outliers_toRemove.csv")
+
+ds.geno.all.clean.noOut <- ds.geno.all.clean[which(!ds.geno.all.clean$filename %in% outliers_toRemove$filename),]
+ds.metrics.noOut <- ds.metrics[which(!ds.metrics$filename %in% outliers_toRemove$filename),]
+
+
+#write.csv(ds.geno.all.clean.noOut, "DS_Samples_ALLPhenotypes_Metrics_mm_Feb14_2020_noOut.csv", row.names = F)
+
+
+```
+
+```{r - unique file with DS and WW seeds}
+
+all.seeds.metrics <- rbind(ww.metrics.noOut, ds.metrics.noOut)
+
+#all.seeds.metrics <- read.csv("All.seeds.metrics_noOut.csv")
+
+```
+
+```{r - info rep - plots}
+#I let's addplots and block information per sample and environment
+
+
+info.rep.plot.filt <- read.csv("Info.Rep.Plot.filter_DEF.csv")
+
+info.rep.plot.filt.cut <- info.rep.plot.filt %>%
+  dplyr::select(-c(Genotype))
+
+
+all.seeds.metrics.edit <- left_join(all.seeds.metrics, info.rep.plot.filt.cut)
+
+
+```
+```{r - estimate mean per genotype}
+
+all.seeds.MEAN.edit <- all.seeds.metrics.edit %>%
+  group_by(Label_Phenotyping) %>% 
+  summarise_at(vars(Eccentricity, Solidity, Area, CH.Vertices, CH.Area, Minor.Axis, Major.Axis, Perimeter, Longest.Path), list(mean))
+
+info.all.seeds.MEAN.edit <- all.seeds.metrics.edit %>%
+  dplyr::select(Label_Phenotyping, Genotype, Environment, Plot, Entry, Number) %>%
+  distinct()
+
+all.seeds.MEAN.edit <- join(all.seeds.MEAN.edit, info.all.seeds.MEAN.edit, by = "Label_Phenotyping")
+
+all.seeds.MEAN.edit <- all.seeds.MEAN.edit[,c(1,11:15, 2:10)]
+
+```
+
+
+```{r - block info by Environment}
+
+#let's split the two environments
+
+all.seeds.MEAN.edit.ww <- all.seeds.MEAN.edit %>%
+  filter(Environment == "WW")
+
+all.seeds.MEAN.edit.ds <- all.seeds.MEAN.edit %>%
+  filter(Environment == "DS")
+
+
+
+#add block info
+
+block <- read.csv("../../rice-phenotyping/Block_Info.csv")
+
+block <- block %>%
+  dplyr::rename(Plot = Plot.) 
+
+block.ww <- block %>%
+  filter(Environment == "WW") %>%
+  dplyr::select(-Genotype)%>%
+  mutate(Block.edit = as.character(as.numeric(as.character(Block))))
+
+block.ds <- block %>%
+  filter(Environment == "DS") %>%
+  dplyr::select(-Genotype)%>%
+  mutate(Block.edit = as.character(as.numeric(as.character(Block))+ 6))
+
+all.seeds.MEAN.edit.ww <- left_join(all.seeds.MEAN.edit.ww, block.ww)
+
+all.seeds.MEAN.edit.ds <- left_join(all.seeds.MEAN.edit.ds, block.ds)
+
+table(all.seeds.MEAN.edit.ww$Block.edit)
+
+table(all.seeds.MEAN.edit.ds$Block.edit)
+
+all.seeds.MEAN.edit.block <- rbind(all.seeds.MEAN.edit.ds, all.seeds.MEAN.edit.ww)
+
+
+#write.csv(all.seeds.MEAN.edit.block, "All.seeds.MEANS_noOut.Plot.Block.10821.csv", row.names = F)
+
+```
+
+```{r Parent boxplots}
+
+parents_info <- read.csv("Parents_IDs_info.csv")
+
+parents_info <- parents_info %>%
+  dplyr::select(-c(Treatment, Number))
+
+parent.metrics <- all.seeds.metrics.edit %>%
+  filter(Genotype %in% parents_info$Genotype)
+
+
+
+#length(unique(parent.metrics$Genotype))
+
+parents.seed.metrics.info <- left_join(parent.metrics, parents_info)
+parents.seed.metrics.info <- parents.seed.metrics.info[, -c(15:16)]
+
+parents.seed.metrics.info$VarietyType <- gsub("GJ-tmp", "GJ", parents.seed.metrics.info$FromBandillo_etal_2013)
+
+parents.seed.metrics.info$VarietyType <- gsub("GJ-trp", "GJ", parents.seed.metrics.info$VarietyType)
+parents.seed.metrics.info$VarietyType <- as.factor(parents.seed.metrics.info$VarietyType)
+
+
+# order the data frame as desired
+parents.seed.metrics.info = parents.seed.metrics.info[order(parents.seed.metrics.info$VarietyType, parents.seed.metrics.info$Genotype), ]
+
+# set the Genotype levels in the order the occur in the data frame
+parents.seed.metrics.info$Genotype = factor(parents.seed.metrics.info$Genotype, levels = unique(parents.seed.metrics.info$Genotype))
+
+tiff("Parents_Boxplot_WW_vs_DS_Area_xVarietyType.0821.tiff", width = 4000, height = 2500, res = 300)
+ggplot(parents.seed.metrics.info, aes(x=Genotype, y=Area, fill=Environment)) + 
+    geom_boxplot() + scale_fill_manual(values = c("WW" = "orange", "DS" = "purple")) +
+  #ggtitle("MAGIC Parents") + 
+  ylab("Seed Area") +
+  theme(axis.text.x = element_text(colour=c("blue","red","red","red","red","red","black","black","black",
+                                            "black","black","black","black","black"),
+                                 angle = 90, hjust = 1, size = 16),
+        axis.title = element_text(size = 24),
+        #title = element_text(size = 16),
+        legend.title = element_text(size = 26),
+        legend.text = element_text(size = 24),
+        panel.background=element_rect(fill='transparent',color='black',size=1)
+        )
+dev.off()
+
+
+tiff("Parents_Boxplot_WW_vs_DS_ellipse_major_axis_mm_xVarietyType.0821.tiff", width = 4000, height = 2500, res = 300)
+ggplot(parents.seed.metrics.info, aes(x=Genotype, y=Major.Axis, fill=Environment)) + 
+    geom_boxplot() + scale_fill_manual(values = c("WW" = "orange", "DS" = "purple")) +
+#  ggtitle("MAGIC Parents") + 
+  ylab("Ellipse Major Axis") +
+  theme(axis.text.x = element_text(colour=c("blue","red","red","red","red","red","black","black","black",
+                                            "black","black","black","black","black"),
+                                 angle = 90, hjust = 1, size = 16),
+        axis.title = element_text(size = 24),
+        #title = element_text(size = 16),
+        legend.title = element_text(size = 26),
+        legend.text = element_text(size = 24),
+        panel.background=element_rect(fill='transparent',color='black',size=1)
+        )
+dev.off()
+
+
+```
+
+
+
+```{r -  Type III ANOVA - model fitting}
+all.seeds.MEAN.edit.block$Genotype <- as.factor(all.seeds.MEAN.edit.block$Genotype)
+
+all.seeds.MEAN.edit.block$Block.edit <- as.factor(all.seeds.MEAN.edit.block$Block.edit)
+
+
+### eccentricity ###
+# Fit reduced model without GxE term 
+eccentricity.mlm1 <- mmer(Eccentricity ~ 1 + Environment,
+             random=~Genotype + Block.edit, 
+             rcov=~units, 
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(eccentricity.mlm1) 
+# Fit full model with GxE term 
+eccentricity.mlm2 <- mmer(Eccentricity ~ 1 + Environment,
+             random=~Genotype + Block.edit + Environment:Genotype,
+             rcov=~units,
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(eccentricity.mlm2)
+
+# Compare reduced and full model using likelihood ratio test to get significance of GxE term
+anova(eccentricity.mlm2, eccentricity.mlm1)
+
+#for eccentricity, even if there is an increase in the log likelihood, the model with GxE is not significant (PrChisq - probability of the chi-square distribution > 0.05)
+
+
+### solidity ###
+# Fit reduced model without GxE term 
+solidity.mlm1 <- mmer(Solidity ~ 1 + Environment,
+             random=~Genotype + Block.edit, 
+             rcov=~units, 
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(solidity.mlm1)
+# Fit full model with GxE term 
+solidity.mlm2 <- mmer(Solidity ~ 1 + Environment,
+             random=~Genotype + Block.edit + Environment:Genotype,
+             rcov=~units,
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(solidity.mlm2)
+
+# Compare reduced and full model using likelihood ratio test to get significance of GxE term
+anova(solidity.mlm2, solidity.mlm1)
+
+
+### area ###
+# Fit reduced model without GxE term 
+area.mlm1 <- mmer(Area ~ 1 + Environment,
+             random=~Genotype + Block.edit, 
+             rcov=~units, 
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(area.mlm1)
+# Fit full model with GxE term 
+area.mlm2 <- mmer(Area ~ 1 + Environment,
+             random=~Genotype + Block.edit + Environment:Genotype,
+             rcov=~units,
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(area.mlm2)
+
+# Compare reduced and full model using likelihood ratio test to get significance of GxE term
+anova(area.mlm2, area.mlm1)
+
+
+### CH.vertices ###
+# Fit reduced model without GxE term 
+ch.vertices.mlm1 <- mmer(CH.Vertices ~ 1 + Environment,
+             random=~Genotype + Block.edit, 
+             rcov=~units, 
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(ch.vertices.mlm1)
+# Fit full model with GxE term 
+ch.vertices.mlm2 <- mmer(CH.Vertices ~ 1 + Environment,
+             random=~Genotype + Block.edit + Environment:Genotype,
+             rcov=~units,
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(ch.vertices.mlm2)
+
+# Compare reduced and full model using likelihood ratio test to get significance of GxE term
+anova(ch.vertices.mlm2, ch.vertices.mlm1)
+
+### ch.area ###
+# Fit reduced model without GxE term 
+ch.area.mlm1 <- mmer(CH.Area ~ 1 + Environment,
+             random=~Genotype + Block.edit, 
+             rcov=~units, 
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(ch.area.mlm1)
+# Fit full model with GxE term 
+ch.area.mlm2 <- mmer(CH.Area ~ 1 + Environment,
+             random=~Genotype + Block.edit + Environment:Genotype,
+             rcov=~units,
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(ch.area.mlm2)
+
+# Compare reduced and full model using likelihood ratio test to get significance of GxE term
+anova(ch.area.mlm2, ch.area.mlm1)
+
+### minor.axis ###
+# Fit reduced model without GxE term 
+minor.axis.mlm1 <- mmer(Minor.Axis ~ 1 + Environment,
+             random=~Genotype + Block.edit, 
+             rcov=~units, 
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(minor.axis.mlm1)
+# Fit full model with GxE term 
+minor.axis.mlm2 <- mmer(Minor.Axis ~ 1 + Environment,
+             random=~Genotype + Block.edit + Environment:Genotype,
+             rcov=~units,
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(minor.axis.mlm2)
+
+# Compare reduced and full model using likelihood ratio test to get significance of GxE term
+anova(minor.axis.mlm2, minor.axis.mlm1)
+
+### major.axis ###
+# Fit reduced model without GxE term 
+major.axis.mlm1 <- mmer(Major.Axis ~ 1 + Environment,
+             random=~Genotype + Block.edit, 
+             rcov=~units, 
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(major.axis.mlm1)
+# Fit full model with GxE term 
+major.axis.mlm2 <- mmer(Major.Axis ~ 1 + Environment,
+             random=~Genotype + Block.edit + Environment:Genotype,
+             rcov=~units,
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(major.axis.mlm2)
+
+# Compare reduced and full model using likelihood ratio test to get significance of GxE term
+anova(major.axis.mlm2, major.axis.mlm1)
+
+### perimeter ###
+# Fit reduced model without GxE term 
+perimeter.mlm1 <- mmer(Perimeter ~ 1 + Environment,
+             random=~Genotype + Block.edit, 
+             rcov=~units, 
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(perimeter.mlm1)
+# Fit full model with GxE term 
+perimeter.mlm2 <- mmer(Perimeter ~ 1 + Environment,
+             random=~Genotype + Block.edit + Environment:Genotype,
+             rcov=~units,
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(perimeter.mlm2)
+
+# Compare reduced and full model using likelihood ratio test to get significance of GxE term
+anova(perimeter.mlm2, perimeter.mlm1)
+
+### longest.path ###
+# Fit reduced model without GxE term 
+longest.path.mlm1 <- mmer(Longest.Path ~ 1 + Environment,
+             random=~Genotype + Block.edit, 
+             rcov=~units, 
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(longest.path.mlm1)
+# Fit full model with GxE term 
+longest.path.mlm2 <- mmer(Longest.Path ~ 1 + Environment,
+             random=~Genotype + Block.edit + Environment:Genotype,
+             rcov=~units,
+             data=all.seeds.MEAN.edit.block,
+             verbose=F)
+summary(longest.path.mlm2)
+
+# Compare reduced and full model using likelihood ratio test to get significance of GxE term
+anova(longest.path.mlm2, longest.path.mlm1)
+
+```
+
+```{r - Type III ANOVA}
+
+### eccentricity ###
+
+ec.aov.III <- anova(eccentricity.mlm1)
+summary(ec.aov.III)
+
+### solidity ###
+anova(solidity.mlm1)
+
+### area ###
+anova(area.mlm2)
+
+### ch.vertices ###
+anova(ch.vertices.mlm2)
+
+### ch.area ###
+anova(ch.area.mlm1)
+
+### minor.axis ###
+anova(minor.axis.mlm2)
+
+### major.axis ###
+anova(major.axis.mlm1)
+
+### perimeter ###
+anova(perimeter.mlm1)
+
+### longest.path ###
+anova(longest.path.mlm1)
+
+```
+
+
+
+```{r - LSMeans - WW}
+
+#first let's create two dataframes based on the Environments
+
+ww.seeds.metrics.edit.block <- all.seeds.metrics.edit.block %>%
+  filter(Environment == "WW")
+
+ds.seeds.metrics.edit.block <- all.seeds.metrics.edit.block %>%
+  filter(Environment == "DS")
+
+#Adjusted means for WW
+#let's fit the model
+
+#eccentricity
+ww.eccentricity.lm <- lm(Eccentricity ~ Genotype + Block, data = ww.seeds.metrics.edit.block)
+
+anova(ww.eccentricity.lm)
+ww.eccentricity.lsm <- as.data.frame(lsmeans(ww.eccentricity.lm, "Genotype"))
+
+#solidity
+
+ww.solidity.lm <- lm(Solidity ~ Genotype + Block, data = ww.seeds.metrics.edit.block)
+
+anova(ww.solidity.lm)
+ww.solidity.lsm <- as.data.frame(lsmeans(ww.solidity.lm, "Genotype"))
+
+#ch.vertices
+
+ww.ch.vertices.lm <- lm(CH.Vertices ~ Genotype + Block, data = ww.seeds.metrics.edit.block)
+
+anova(ww.ch.vertices.lm)
+ww.ch.vertices.lsm <- as.data.frame(lsmeans(ww.ch.vertices.lm, "Genotype"))
+
+#area
+
+ww.area.lm <- lm(Area ~ Genotype + Block, data = ww.seeds.metrics.edit.block)
+
+anova(ww.area.lm)
+ww.area.lsm <- as.data.frame(lsmeans(ww.area.lm, "Genotype"))
+
+#ch.area
+
+ww.ch.area.lm <- lm(CH.Area ~ Genotype + Block, data = ww.seeds.metrics.edit.block)
+
+anova(ww.ch.area.lm)
+ww.ch.area.lsm <- as.data.frame(lsmeans(ww.ch.area.lm, "Genotype"))
+
+#perimeter
+
+ww.perimeter.lm <- lm(Perimeter ~ Genotype + Block, data = ww.seeds.metrics.edit.block)
+
+anova(ww.perimeter.lm)
+ww.perimeter.lsm <- as.data.frame(lsmeans(ww.perimeter.lm, "Genotype"))
+
+#longest path
+
+ww.longestpath.lm <- lm(Longest.Path ~ Genotype + Block, data = ww.seeds.metrics.edit.block)
+
+anova(ww.longestpath.lm)
+ww.longestpath.lsm <- as.data.frame(lsmeans(ww.longestpath.lm, "Genotype"))
+
+#major axis
+
+ww.majorA.lm <- lm(Major.Axis ~ Genotype + Block, data = ww.seeds.metrics.edit.block)
+
+anova(ww.majorA.lm)
+ww.majorA.lsm <- as.data.frame(lsmeans(ww.majorA.lm, "Genotype"))
+
+#minor axis
+
+ww.minorA.lm <- lm(Minor.Axis ~ Genotype + Block, data = ww.seeds.metrics.edit.block)
+
+anova(ww.minorA.lm)
+ww.minorA.lsm <- as.data.frame(lsmeans(ww.minorA.lm, "Genotype"))
+
+#get a unique data.frame with all LSMs
+
+ww.eccentricity.lsm <- ww.eccentricity.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Eccentricity = lsmean)
+
+ww.solidity.lsm <- ww.solidity.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Solidity = lsmean)
+
+ww.ch.vertices.lsm <- ww.ch.vertices.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(CH.Vertices = lsmean)
+
+ww.area.lsm <- ww.area.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Area = lsmean)
+
+ww.ch.area.lsm <- ww.ch.area.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(CH.Area = lsmean)
+
+ww.perimeter.lsm <- ww.perimeter.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Perimeter = lsmean)
+
+ww.longestpath.lsm <- ww.longestpath.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Longest.Path = lsmean)
+
+ww.majorA.lsm <- ww.majorA.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Major.Axis = lsmean)
+
+ww.minorA.lsm <- ww.minorA.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Minor.Axis = lsmean)
+
+ww.lsm.all <- left_join(ww.eccentricity.lsm, ww.solidity.lsm) %>%
+  left_join(ww.ch.vertices.lsm) %>%
+  left_join(ww.area.lsm) %>%
+  left_join(ww.ch.area.lsm) %>%
+  left_join(ww.perimeter.lsm) %>%
+  left_join(ww.longestpath.lsm) %>%
+  left_join(ww.majorA.lsm) %>%
+  left_join(ww.minorA.lsm)
+
+#write.csv(ww.lsm.all, "WW.LSM.csv", row.names = F)
+
+#for Tassel
+ww.lsm.all.tassel <- ww.lsm.all %>%
+  rename(Taxa = Genotype)
+
+#write.table(ww.lsm.all.tassel, "WW.LSM.Tassel.txt", row.names = F, quote = F, sep = '\t', col.names = T)
+
+```
+
+```{r - LSmeans -DS}
+
+#eccentricity
+
+ds.eccentricity.lm <- lm(Eccentricity ~ Genotype + Block, data = ds.seeds.metrics.edit.block)
+
+anova(ds.eccentricity.lm)
+ds.eccentricity.lsm <- as.data.frame(lsmeans(ds.eccentricity.lm, "Genotype"))
+
+#solidity
+
+ds.solidity.lm <- lm(Solidity ~ Genotype + Block, data = ds.seeds.metrics.edit.block)
+
+anova(ds.solidity.lm)
+ds.solidity.lsm <- as.data.frame(lsmeans(ds.solidity.lm, "Genotype"))
+
+#ch.vertices
+
+ds.ch.vertices.lm <- lm(CH.Vertices ~ Genotype + Block, data = ds.seeds.metrics.edit.block)
+
+anova(ds.ch.vertices.lm)
+ds.ch.vertices.lsm <- as.data.frame(lsmeans(ds.ch.vertices.lm, "Genotype"))
+
+#area
+
+ds.area.lm <- lm(Area ~ Genotype + Block, data = ds.seeds.metrics.edit.block)
+
+anova(ds.area.lm)
+ds.area.lsm <- as.data.frame(lsmeans(ds.area.lm, "Genotype"))
+
+#ch.area
+
+ds.ch.area.lm <- lm(CH.Area ~ Genotype + Block, data = ds.seeds.metrics.edit.block)
+
+anova(ds.ch.area.lm)
+ds.ch.area.lsm <- as.data.frame(lsmeans(ds.ch.area.lm, "Genotype"))
+
+#perimeter
+
+ds.perimeter.lm <- lm(Perimeter ~ Genotype + Block, data = ds.seeds.metrics.edit.block)
+
+anova(ds.perimeter.lm)
+ds.perimeter.lsm <- as.data.frame(lsmeans(ds.perimeter.lm, "Genotype"))
+
+#longest path
+
+ds.longestpath.lm <- lm(Longest.Path ~ Genotype + Block, data = ds.seeds.metrics.edit.block)
+
+anova(ds.longestpath.lm)
+ds.longestpath.lsm <- as.data.frame(lsmeans(ds.longestpath.lm, "Genotype"))
+
+#major axis
+
+ds.majorA.lm <- lm(Major.Axis ~ Genotype + Block, data = ds.seeds.metrics.edit.block)
+
+anova(ds.majorA.lm)
+ds.majorA.lsm <- as.data.frame(lsmeans(ds.majorA.lm, "Genotype"))
+
+#minor axis
+
+ds.minorA.lm <- lm(Minor.Axis ~ Genotype + Block, data = ds.seeds.metrics.edit.block)
+
+anova(ds.minorA.lm)
+ds.minorA.lsm <- as.data.frame(lsmeans(ds.minorA.lm, "Genotype"))
+
+#get a unique data.frame with all LSMs
+
+ds.eccentricity.lsm <- ds.eccentricity.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Eccentricity = lsmean)
+
+ds.solidity.lsm <- ds.solidity.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Solidity = lsmean)
+
+ds.ch.vertices.lsm <- ds.ch.vertices.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(CH.Vertices = lsmean)
+
+ds.area.lsm <- ds.area.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Area = lsmean)
+
+ds.ch.area.lsm <- ds.ch.area.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(CH.Area = lsmean)
+
+ds.perimeter.lsm <- ds.perimeter.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Perimeter = lsmean)
+
+ds.longestpath.lsm <- ds.longestpath.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Longest.Path = lsmean)
+
+ds.majorA.lsm <- ds.majorA.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Major.Axis = lsmean)
+
+ds.minorA.lsm <- ds.minorA.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Minor.Axis = lsmean)
+
+ds.lsm.all <- left_join(ds.eccentricity.lsm, ds.solidity.lsm) %>%
+  left_join(ds.ch.vertices.lsm) %>%
+  left_join(ds.area.lsm) %>%
+  left_join(ds.ch.area.lsm) %>%
+  left_join(ds.perimeter.lsm) %>%
+  left_join(ds.longestpath.lsm) %>%
+  left_join(ds.majorA.lsm) %>%
+  left_join(ds.minorA.lsm)
+
+#write.csv(ds.lsm.all, "DS.LSM.csv", row.names = F)
+
+#for Tassel
+ds.lsm.all.tassel <- ds.lsm.all %>%
+  rename(Taxa = Genotype)
+
+#write.table(ds.lsm.all.tassel, "DS.LSM.Tassel.txt", row.names = F, quote = F, sep = '\t', col.names = T)
+```
+
+Let's add the seed weight
+
+```{r - Seed Weight}
+
+weight <- read.csv("../SeedWeight/SeedWeight.csv")
+
+weight$Weight.1000seeds <- round((weight$Weight.50seeds/weight$N.seeds)*1000,2)
+
+weight$Genotype <- gsub("CYPRESS", "Cypress", weight$Genotype)
+weight$Genotype <- gsub("FEDEARROZ 50", "Fedearroz 50", weight$Genotype)
+weight$Genotype <- gsub("INIA TACUARI", "Inia Tacuari", weight$Genotype)
+weight$Genotype <- gsub("JINBUBYEO", "Jinbubyeo", weight$Genotype)
+weight$Genotype <- gsub("SANHUANGZHAN NO 2", "Sanhuangzhan No 2", weight$Genotype)
+
+weight <- weight %>%
+  rename(Environment = Treatment)
+
+#I should add the block info
+
+seed.Sample.info <- all.seeds.metrics.edit.block %>%
+  select(Genotype, Environment, Number, Plot, Entry, Block, Block.edit) %>%
+  distinct()
+
+weight.withInfo <- left_join(weight, seed.Sample.info)
+
+#write.csv(weight.withInfo, "../SeedWeight/SeedWeight.WITHiNFO.081721.csv", row.names = F)
+
+```
+
+```{r - Seed Weight - ANOVA + LSMeans}
+
+### Type III ANOVA ###
+
+weight.withInfo$Genotype <- as.factor(weight.withInfo$Genotype)
+
+weight.withInfo$Block.edit <- as.factor(weight.withInfo$Block.edit)
+
+
+### weight ###
+# Fit reduced model without GxE term 
+weight.mlm1 <- mmer(Weight.1000seeds ~ 1 + Environment,
+             random=~Genotype + Block.edit, 
+             rcov=~units, 
+             data=weight.withInfo,
+             verbose=F)
+summary(weight.mlm1) 
+# Fit full model with GxE term 
+weight.mlm2 <- mmer(Weight.1000seeds ~ 1 + Environment,
+             random=~Genotype + Block.edit + Environment:Genotype,
+             rcov=~units,
+             data=weight.withInfo,
+             verbose=F)
+summary(weight.mlm2)
+
+# Compare reduced and full model using likelihood ratio test to get significance of GxE term
+anova(weight.mlm1, weight.mlm2)
+
+anova(weight.mlm2)
+
+
+#LSMeans
+
+ww.weight <- weight.withInfo %>%
+  filter(Environment == "WW")
+
+ds.weight <- weight.withInfo %>%
+  filter(Environment == "DS")
+
+#Adjusted means for WW
+#let's fit the model
+
+#weight
+
+#WW
+ww.weight.lm <- lm(Weight.1000seeds ~ Genotype + Block, data = ww.weight)
+
+anova(ww.weight.lm)
+ww.weight.lsm <- as.data.frame(lsmeans(ww.weight.lm, "Genotype"))
+
+ww.weight.lsm <- ww.weight.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Weight = lsmean)
+
+ww.lsm.all <- left_join(ww.lsm.all, ww.weight.lsm)
+
+#write.csv(ww.lsm.all, "WW.LSM.csv", row.names = F)
+
+#for Tassel
+ww.lsm.all.tassel <- ww.lsm.all %>%
+  rename(Taxa = Genotype)
+
+#write.table(ww.lsm.all.tassel, "WW.LSM.Tassel.txt", row.names = F, quote = F, sep = '\t', col.names = T)
+
+
+#DS
+ds.weight.lm <- lm(Weight.1000seeds ~ Genotype + Block, data = ds.weight)
+
+anova(ds.weight.lm)
+ds.weight.lsm <- as.data.frame(lsmeans(ds.weight.lm, "Genotype"))
+
+
+ds.weight.lsm <- ds.weight.lsm %>%
+  select(Genotype, lsmean) %>%
+  rename(Weight = lsmean)
+
+ds.lsm.all <- left_join(ds.lsm.all, ds.weight.lsm)
+
+#write.csv(ds.lsm.all, "DS.LSM.csv", row.names = F)
+
+#for Tassel
+ds.lsm.all.tassel <- ds.lsm.all %>%
+  rename(Taxa = Genotype)
+
+#write.table(ds.lsm.all.tassel, "DS.LSM.Tassel.txt", row.names = F, quote = F, sep = '\t', col.names = T)
+
+
+
+```
+
